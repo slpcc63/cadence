@@ -13,24 +13,20 @@ import {
 export type SquareEnvironment = "production" | "sandbox";
 
 const squareVersion = "2026-01-22";
-const defaultSquareScopes: Record<SquarePluginId, string[]> = {
-  "square-calendar-sink": [
-    "MERCHANT_PROFILE_READ",
-    "TIMECARDS_READ",
-    "EMPLOYEES_READ"
-  ],
-  "square-time-card-manager": [
-    "MERCHANT_PROFILE_READ",
-    "TIMECARDS_READ",
-    "TIMECARDS_WRITE",
-    "EMPLOYEES_READ"
-  ]
-};
+const supportedPluginId: SquarePluginId = "square-calendar-sink";
+const defaultSquareScopes = ["MERCHANT_PROFILE_READ", "TIMECARDS_READ", "EMPLOYEES_READ"];
+
+function assertSupportedPlugin(pluginId: SquarePluginId) {
+  if (pluginId !== supportedPluginId) {
+    throw new Error(`Unsupported Square product: ${pluginId}`);
+  }
+}
 
 function getSquareEnvironment(pluginId?: SquarePluginId): SquareEnvironment {
   const runtime = getProductRuntime();
   const runtimePluginId = runtime ? getRuntimePluginId(runtime) : undefined;
   const configuredPluginId = pluginId ?? runtimePluginId;
+  if (configuredPluginId) assertSupportedPlugin(configuredPluginId);
   const configured = configuredPluginId
     ? getSquareProductEnvironmentValue(configuredPluginId, "ENVIRONMENT")
     : process.env.SQUARE_ENVIRONMENT;
@@ -47,22 +43,26 @@ export function getSquareBaseUrl(pluginId?: SquarePluginId) {
 }
 
 export function getSquareAppId(pluginId: SquarePluginId) {
+  assertSupportedPlugin(pluginId);
   return getSquareProductEnvironmentValue(pluginId, "APPLICATION_ID");
 }
 
 export function getSquareAppSecret(pluginId: SquarePluginId) {
+  assertSupportedPlugin(pluginId);
   return getSquareProductEnvironmentValue(pluginId, "APPLICATION_SECRET");
 }
 
 export function getSquareRedirectUri(pluginId: SquarePluginId) {
+  assertSupportedPlugin(pluginId);
   return getSquareProductRedirectUri(pluginId);
 }
 
 export function getSquareScopes(pluginId: SquarePluginId) {
+  assertSupportedPlugin(pluginId);
   const configuredScopes = getSquareProductEnvironmentValue(pluginId, "SCOPES").trim();
 
   if (!configuredScopes) {
-    return defaultSquareScopes[pluginId];
+    return [...defaultSquareScopes];
   }
 
   return configuredScopes
@@ -83,44 +83,6 @@ type SquareListLocationsResponse = {
     id: string;
     name?: string;
   }>;
-};
-
-export type SquareTimecard = {
-  id: string;
-  location_id: string;
-  start_at: string;
-  end_at?: string;
-  status: "OPEN" | "CLOSED";
-  team_member_id?: string;
-  updated_at?: string;
-  version?: number;
-  wage?: {
-    job_id?: string;
-    title?: string;
-    hourly_rate?: { amount?: number; currency?: string };
-    tip_eligible?: boolean;
-  };
-};
-
-type SquareSearchTimecardsResponse = {
-  cursor?: string;
-  timecards?: SquareTimecard[];
-};
-
-type SquareTimecardResponse = { timecard?: SquareTimecard };
-
-export type SquareTeamMemberWage = {
-  id?: string;
-  team_member_id?: string;
-  title?: string;
-  job_id?: string;
-  hourly_rate?: { amount?: number; currency?: string };
-  tip_eligible?: boolean;
-};
-
-type SquareListTeamMemberWagesResponse = {
-  cursor?: string;
-  team_member_wages?: SquareTeamMemberWage[];
 };
 
 export type SquareTeamMember = {
@@ -211,137 +173,6 @@ export async function listSquareLocations(accessToken: string) {
   });
 
   return response.locations ?? [];
-}
-
-export async function searchSquareOpenTimecards(accessToken: string) {
-  const timecards: NonNullable<SquareSearchTimecardsResponse["timecards"]> = [];
-  let cursor: string | undefined;
-
-  do {
-    const response = await squareApiRequest<SquareSearchTimecardsResponse>({
-      accessToken,
-      path: "/v2/labor/timecards/search",
-      body: {
-        cursor,
-        limit: 200,
-        query: {
-          filter: {
-            status: "OPEN"
-          },
-          sort: {
-            field: "START_AT",
-            order: "ASC"
-          }
-        }
-      }
-    });
-
-    if (response.timecards?.length) {
-      timecards.push(...response.timecards);
-    }
-
-    cursor = response.cursor;
-  } while (cursor);
-
-  return timecards;
-}
-
-export async function searchSquareTimecardsByWorkday(input: {
-  accessToken: string;
-  endDate: string;
-  locationIds?: string[];
-  startDate: string;
-  teamMemberIds?: string[];
-  timezone: string;
-}) {
-  const timecards: SquareTimecard[] = [];
-  let cursor: string | undefined;
-
-  do {
-    const response = await squareApiRequest<SquareSearchTimecardsResponse>({
-      accessToken: input.accessToken,
-      path: "/v2/labor/timecards/search",
-      body: {
-        cursor,
-        limit: 200,
-        query: {
-          filter: {
-            workday: {
-              date_range: { start_date: input.startDate, end_date: input.endDate },
-              default_timezone: input.timezone,
-              match_timecards_by: "START_AT"
-            },
-            ...(input.locationIds?.length ? { location_ids: input.locationIds } : {}),
-            ...(input.teamMemberIds?.length ? { team_member_ids: input.teamMemberIds } : {})
-          },
-          sort: { field: "START_AT", order: "ASC" }
-        }
-      }
-    });
-
-    if (response.timecards?.length) timecards.push(...response.timecards);
-    cursor = response.cursor;
-  } while (cursor);
-
-  return timecards;
-}
-
-export async function retrieveSquareTimecard(input: {
-  accessToken: string;
-  timecardId: string;
-}) {
-  const response = await squareApiRequest<SquareTimecardResponse>({
-    accessToken: input.accessToken,
-    path: `/v2/labor/timecards/${encodeURIComponent(input.timecardId)}`
-  });
-  return response.timecard ?? null;
-}
-
-export async function createSquareTimecard(input: {
-  accessToken: string;
-  idempotencyKey: string;
-  timecard: Omit<SquareTimecard, "id" | "status">;
-}) {
-  const response = await squareApiRequest<SquareTimecardResponse>({
-    accessToken: input.accessToken,
-    path: "/v2/labor/timecards",
-    body: { idempotency_key: input.idempotencyKey, timecard: input.timecard }
-  });
-  return response.timecard ?? null;
-}
-
-export async function updateSquareTimecard(input: {
-  accessToken: string;
-  timecard: Pick<SquareTimecard, "id" | "version"> & Partial<SquareTimecard>;
-}) {
-  const response = await squareApiRequest<SquareTimecardResponse>({
-    accessToken: input.accessToken,
-    method: "PUT",
-    path: `/v2/labor/timecards/${encodeURIComponent(input.timecard.id)}`,
-    body: { timecard: input.timecard }
-  });
-  return response.timecard ?? null;
-}
-
-export async function listSquareTeamMemberWages(input: {
-  accessToken: string;
-  teamMemberId: string;
-}) {
-  const wages: SquareTeamMemberWage[] = [];
-  let cursor: string | undefined;
-
-  do {
-    const params = new URLSearchParams({ team_member_id: input.teamMemberId, limit: "200" });
-    if (cursor) params.set("cursor", cursor);
-    const response = await squareApiRequest<SquareListTeamMemberWagesResponse>({
-      accessToken: input.accessToken,
-      path: `/v2/labor/team-member-wages?${params.toString()}`
-    });
-    if (response.team_member_wages?.length) wages.push(...response.team_member_wages);
-    cursor = response.cursor;
-  } while (cursor);
-
-  return wages;
 }
 
 export async function searchSquareTeamMembers(accessToken: string) {
